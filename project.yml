@@ -1,0 +1,25 @@
+name: LoxxMini
+options:
+  bundleIdPrefix: com.example
+packages:
+  MapLibre:
+    url: https://github.com/maplibre/maplibre-gl-native-distribution
+    from: 6.0.0
+targets:
+  LoxxMini:
+    type: application
+    platform: iOS
+    deploymentTarget: "15.0"
+    sources:
+      - App
+      - Resources
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.example.loxxmini
+        INFOPLIST_FILE: Resources/Info.plist
+        SWIFT_VERSION: 5.9
+        TARGETED_DEVICE_FAMILY: 1
+    dependencies:
+      - package: MapLibre
+        product: MapLibre
+
