@@ -82,19 +82,22 @@ struct ContentView: View {
                         shouldCenterOnNextLocation = false
                         locationPermission.stopUpdates()
                     } else {
-                    if locationPermission.authorizationStatus == .notDetermined {
-                        shouldCenterOnNextLocation = true
-                        locationPermission.requestWhenInUse()
-                    } else if locationPermission.authorizationStatus == .denied || locationPermission.authorizationStatus == .restricted {
-                        showDeniedAlert = true
-                    } else {
+                        if locationPermission.authorizationStatus == .notDetermined {
                             isFollowingUser = true
-                        shouldCenterOnNextLocation = true
-                        locationPermission.startUpdates()
+                            shouldCenterOnNextLocation = true
+                            mapZoom = max(mapZoom, 16)
+                            locationPermission.requestWhenInUse()
+                        } else if locationPermission.authorizationStatus == .denied || locationPermission.authorizationStatus == .restricted {
+                            showDeniedAlert = true
+                        } else {
+                            isFollowingUser = true
+                            shouldCenterOnNextLocation = true
+                            mapZoom = max(mapZoom, 16)
+                            locationPermission.startUpdates()
                             if let loc = locationPermission.lastLocation {
                                 mapCenter = loc.coordinate
                             }
-                    }
+                        }
                     }
                 }
                 .padding(.horizontal, 10)
@@ -174,7 +177,11 @@ struct ContentView: View {
         .onChange(of: locationPermission.lastLocation) { newValue in
             if shouldCenterOnNextLocation, let loc = newValue {
                 mapCenter = loc.coordinate
+                // при первом фиксе уже увеличен зум в обработчике кнопки
                 shouldCenterOnNextLocation = false
+            }
+            if isFollowingUser, let loc = newValue {
+                mapCenter = loc.coordinate
             }
         }
     }
