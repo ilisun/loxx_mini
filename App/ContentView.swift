@@ -52,7 +52,8 @@ struct ContentView: View {
 
     enum MapMode: String, Hashable {
         case raster
-        case vector
+        case vectorFlat
+        case vector3d
     }
 
     @State private var mapMode: MapMode = .raster
@@ -64,7 +65,8 @@ struct ContentView: View {
                 zoomLevel: $mapZoom,
                 userLocation: $locationPermission.lastLocation,
                 isAuthorized: .constant(locationPermission.authorizationStatus == .authorizedWhenInUse || locationPermission.authorizationStatus == .authorizedAlways),
-                isVectorStyle: mapMode == .vector
+                isVectorStyle: mapMode != .raster,
+                isThreeD: mapMode == .vector3d
             )
             .ignoresSafeArea()
             .id(mapMode)
@@ -85,17 +87,23 @@ struct ContentView: View {
                     }
                 }
                 Button("+") { mapZoom = min(mapZoom + 1, 20) }
-                Button("Перекл.") {
-                    if mapMode == .raster {
-                        // Проверяем наличие URL стиля Liberty в Info.plist
-                        if let urlString = Bundle.main.object(forInfoDictionaryKey: "LibertyStyleURL") as? String,
-                           let url = URL(string: urlString), !urlString.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                            mapMode = .vector
-                        } else {
-                            showVectorErrorAlert = true
-                            mapMode = .raster
-                        }
+                // Режимы: R (растровый), V (вектор плоский), V3d (вектор 3D)
+                Button("R") { mapMode = .raster }
+                Button("V") {
+                    if let urlString = Bundle.main.object(forInfoDictionaryKey: "LibertyStyleURL") as? String,
+                       let _ = URL(string: urlString), !urlString.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        mapMode = .vectorFlat
                     } else {
+                        showVectorErrorAlert = true
+                        mapMode = .raster
+                    }
+                }
+                Button("V3d") {
+                    if let urlString = Bundle.main.object(forInfoDictionaryKey: "LibertyStyleURL") as? String,
+                       let _ = URL(string: urlString), !urlString.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        mapMode = .vector3d
+                    } else {
+                        showVectorErrorAlert = true
                         mapMode = .raster
                     }
                 }
@@ -147,6 +155,7 @@ struct MapLibreMapView: UIViewRepresentable {
     @Binding var userLocation: CLLocation?
     @Binding var isAuthorized: Bool
     var isVectorStyle: Bool
+    var isThreeD: Bool
 
     func makeUIView(context: Context) -> MLNMapView {
         let view: MLNMapView
@@ -159,7 +168,16 @@ struct MapLibreMapView: UIViewRepresentable {
         } else {
             view = MLNMapView(frame: .zero)
         }
+        view.delegate = context.coordinator
         view.setCenter(centerCoordinate, zoomLevel: zoomLevel, animated: false)
+        // Поворачиваем камеру для видимой 3D-экструзии в векторном режиме
+        if isVectorStyle && isThreeD {
+            let cam = view.camera
+            cam.pitch = 45
+            view.setCamera(cam, animated: false)
+        }
+        // Разрешаем наклон (на случай ручного жеста и корректной отрисовки)
+        view.allowsTilting = true
         view.showsUserLocation = false
         // Отключаем жесты масштабирования (pinch, double-tap)
         DispatchQueue.main.async {
@@ -176,8 +194,79 @@ struct MapLibreMapView: UIViewRepresentable {
     }
 
     func updateUIView(_ uiView: MLNMapView, context: Context) {
+        // Обновляем наклон камеры в зависимости от режима
+        let cam = uiView.camera
+        let targetPitch: CGFloat = (isVectorStyle && isThreeD) ? 45 : 0
+        if cam.pitch != targetPitch {
+            cam.pitch = targetPitch
+            uiView.setCamera(cam, animated: true)
+        }
         uiView.setCenter(centerCoordinate, zoomLevel: zoomLevel, animated: true)
         uiView.showsUserLocation = isAuthorized
+    }
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(self)
+    }
+
+    final class Coordinator: NSObject, MLNMapViewDelegate {
+        private let parent: MapLibreMapView
+
+        init(_ parent: MapLibreMapView) {
+            self.parent = parent
+        }
+
+        func mapView(_ mapView: MLNMapView, didFinishLoading style: MLNStyle) {
+            guard parent.isVectorStyle else { return }
+            // Проверяем наличие нужного векторного источника из Liberty
+            guard let vectorSource = style.source(withIdentifier: "openmaptiles") as? MLNVectorTileSource else { return }
+
+            // Если в стиле уже есть слой building-3d, полагаемся на него
+            if !parent.isThreeD {
+                // В плоском режиме ещё и гарантируем нулевой pitch
+                if mapView.camera.pitch != 0 {
+                    let camera = mapView.camera
+                    camera.pitch = 0
+                    mapView.setCamera(camera, animated: true)
+                }
+                return
+            }
+            if style.layer(withIdentifier: "building-3d") != nil {
+                // Устанавливаем наклон камеры для видимости 3D, даже если слой есть в стиле
+                let camera = mapView.camera
+                if camera.pitch != 45 {
+                    camera.pitch = 45
+                    mapView.setCamera(camera, animated: true)
+                }
+                return
+            }
+
+            // Создаём 3D-экструзию для зданий (аналогично стилю Liberty)
+            let layerId = "building-3d-custom"
+            let extrude = MLNFillExtrusionStyleLayer(identifier: layerId, source: vectorSource)
+            extrude.sourceLayerIdentifier = "building"
+            extrude.minimumZoomLevel = 14
+            extrude.fillExtrusionOpacity = NSExpression(forConstantValue: 0.8)
+            // hsl(35,8%,85%) ≈ тёплый светло‑серый
+            extrude.fillExtrusionColor = NSExpression(forConstantValue: UIColor(hue: 35.0/360.0, saturation: 0.08, brightness: 0.85, alpha: 1.0))
+            // Используем вычисленные атрибуты стиля Liberty
+            extrude.fillExtrusionHeight = NSExpression(format: "mgl_get('render_height')")
+            extrude.fillExtrusionBase = NSExpression(format: "mgl_get('render_min_height')")
+
+            // Вставляем слой над другими строительными полигонами (если есть), иначе в конец
+            if let labelLayer = style.layers.reversed().first(where: { $0 is MLNSymbolStyleLayer }) {
+                style.insertLayer(extrude, below: labelLayer)
+            } else {
+                style.addLayer(extrude)
+            }
+
+            // Гарантируем наклон камеры после добавления экструзии
+            let camera = mapView.camera
+            if camera.pitch != 45 {
+                camera.pitch = 45
+                mapView.setCamera(camera, animated: true)
+            }
+        }
     }
 }
 
