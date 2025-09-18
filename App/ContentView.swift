@@ -49,6 +49,7 @@ struct ContentView: View {
     @State private var showDeniedAlert: Bool = false
     @State private var shouldCenterOnNextLocation: Bool = false
     @State private var showVectorErrorAlert: Bool = false
+    @State private var isFollowingUser: Bool = false
 
     enum MapMode: String, Hashable {
         case raster
@@ -66,29 +67,49 @@ struct ContentView: View {
                 userLocation: $locationPermission.lastLocation,
                 isAuthorized: .constant(locationPermission.authorizationStatus == .authorizedWhenInUse || locationPermission.authorizationStatus == .authorizedAlways),
                 isVectorStyle: mapMode != .raster,
-                isThreeD: mapMode == .vector3d
+                isThreeD: mapMode == .vector3d,
+                isFollowingUser: $isFollowingUser
             )
             .ignoresSafeArea()
             .id(mapMode)
 
             HStack(spacing: 24) {
                 Button("–") { mapZoom = max(mapZoom - 1, 1) }
-                Button("Найти меня") {
+                Button("Следить") {
+                    // Тоггл режима слежения
+                    if isFollowingUser {
+                        isFollowingUser = false
+                        shouldCenterOnNextLocation = false
+                        locationPermission.stopUpdates()
+                    } else {
                     if locationPermission.authorizationStatus == .notDetermined {
                         shouldCenterOnNextLocation = true
                         locationPermission.requestWhenInUse()
-                    } else if let loc = locationPermission.lastLocation {
-                        mapCenter = loc.coordinate
                     } else if locationPermission.authorizationStatus == .denied || locationPermission.authorizationStatus == .restricted {
                         showDeniedAlert = true
                     } else {
+                            isFollowingUser = true
                         shouldCenterOnNextLocation = true
                         locationPermission.startUpdates()
+                            if let loc = locationPermission.lastLocation {
+                                mapCenter = loc.coordinate
+                            }
+                    }
                     }
                 }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(isFollowingUser ? Color.accentColor : Color.clear)
+                .foregroundStyle(isFollowingUser ? Color.white : Color.primary)
+                .clipShape(Capsule())
                 Button("+") { mapZoom = min(mapZoom + 1, 20) }
                 // Режимы: R (растровый), V (вектор плоский), V3d (вектор 3D)
                 Button("R") { mapMode = .raster }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(mapMode == .raster ? Color.accentColor : Color.clear)
+                .foregroundStyle(mapMode == .raster ? Color.white : Color.primary)
+                .clipShape(Capsule())
                 Button("V") {
                     if let urlString = Bundle.main.object(forInfoDictionaryKey: "LibertyStyleURL") as? String,
                        let _ = URL(string: urlString), !urlString.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -98,6 +119,11 @@ struct ContentView: View {
                         mapMode = .raster
                     }
                 }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(mapMode == .vectorFlat ? Color.accentColor : Color.clear)
+                .foregroundStyle(mapMode == .vectorFlat ? Color.white : Color.primary)
+                .clipShape(Capsule())
                 Button("V3d") {
                     if let urlString = Bundle.main.object(forInfoDictionaryKey: "LibertyStyleURL") as? String,
                        let _ = URL(string: urlString), !urlString.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -107,6 +133,11 @@ struct ContentView: View {
                         mapMode = .raster
                     }
                 }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(mapMode == .vector3d ? Color.accentColor : Color.clear)
+                .foregroundStyle(mapMode == .vector3d ? Color.white : Color.primary)
+                .clipShape(Capsule())
             }
             .padding(.horizontal, 24)
             .padding(.vertical, 12)
@@ -156,6 +187,7 @@ struct MapLibreMapView: UIViewRepresentable {
     @Binding var isAuthorized: Bool
     var isVectorStyle: Bool
     var isThreeD: Bool
+    @Binding var isFollowingUser: Bool
 
     func makeUIView(context: Context) -> MLNMapView {
         let view: MLNMapView
@@ -201,7 +233,25 @@ struct MapLibreMapView: UIViewRepresentable {
             cam.pitch = targetPitch
             uiView.setCamera(cam, animated: true)
         }
-        uiView.setCenter(centerCoordinate, zoomLevel: zoomLevel, animated: true)
+        // Если идёт пользовательский жест, не навязываем никаких изменений
+        if !isFollowingUser, context.coordinator.isUserGestureActive {
+            uiView.showsUserLocation = isAuthorized
+            return
+        }
+        // Если слежение выключено — не навязываем центр, только зум при неизменном центре
+        if isFollowingUser {
+            uiView.setCenter(centerCoordinate, zoomLevel: zoomLevel, animated: true)
+        } else {
+            let currentCenter = uiView.centerCoordinate
+            let centerChanged = abs(currentCenter.latitude - centerCoordinate.latitude) > 1e-6 || abs(currentCenter.longitude - centerCoordinate.longitude) > 1e-6
+            if centerChanged {
+                // Центр обновили внешне (например, кнопкой режимов) — применим
+                uiView.setCenter(centerCoordinate, zoomLevel: zoomLevel, animated: true)
+            } else if fabs(uiView.zoomLevel - zoomLevel) > 1e-3 {
+                // Только зум — оставляем текущий центр экрана
+                uiView.setZoomLevel(zoomLevel, animated: true)
+            }
+        }
         uiView.showsUserLocation = isAuthorized
     }
 
@@ -211,9 +261,21 @@ struct MapLibreMapView: UIViewRepresentable {
 
     final class Coordinator: NSObject, MLNMapViewDelegate {
         private let parent: MapLibreMapView
+        var isUserGestureActive: Bool = false
 
         init(_ parent: MapLibreMapView) {
             self.parent = parent
+        }
+
+        func mapView(_ mapView: MLNMapView, regionWillChangeAnimated animated: Bool) {
+            isUserGestureActive = true
+        }
+
+        func mapView(_ mapView: MLNMapView, regionDidChangeAnimated animated: Bool) {
+            // Синхронизируем биндинги фактическим положением карты
+            parent.centerCoordinate = mapView.centerCoordinate
+            parent.zoomLevel = mapView.zoomLevel
+            isUserGestureActive = false
         }
 
         func mapView(_ mapView: MLNMapView, didFinishLoading style: MLNStyle) {
