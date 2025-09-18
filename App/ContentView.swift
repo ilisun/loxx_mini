@@ -6,6 +6,7 @@ final class LocationPermissionManager: NSObject, ObservableObject, CLLocationMan
     private let manager = CLLocationManager()
     @Published var authorizationStatus: CLAuthorizationStatus
     @Published var lastLocation: CLLocation?
+    @Published var lastHeading: CLHeading?
 
     override init() {
         self.authorizationStatus = manager.authorizationStatus
@@ -24,10 +25,16 @@ final class LocationPermissionManager: NSObject, ObservableObject, CLLocationMan
 
     func startUpdates() {
         manager.startUpdatingLocation()
+        if CLLocationManager.headingAvailable() {
+            manager.startUpdatingHeading()
+        }
     }
 
     func stopUpdates() {
         manager.stopUpdatingLocation()
+        if CLLocationManager.headingAvailable() {
+            manager.stopUpdatingHeading()
+        }
     }
 
     func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
@@ -40,6 +47,10 @@ final class LocationPermissionManager: NSObject, ObservableObject, CLLocationMan
     func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
         lastLocation = locations.last
     }
+
+    func locationManager(_ manager: CLLocationManager, didUpdateHeading newHeading: CLHeading) {
+        lastHeading = newHeading
+    }
 }
 
 struct ContentView: View {
@@ -50,6 +61,7 @@ struct ContentView: View {
     @State private var shouldCenterOnNextLocation: Bool = false
     @State private var showVectorErrorAlert: Bool = false
     @State private var isFollowingUser: Bool = false
+    @State private var mapDirection: CLLocationDirection = 0 // в градусах (0-360), 0 — север вверх
 
     enum MapMode: String, Hashable {
         case raster
@@ -68,7 +80,8 @@ struct ContentView: View {
                 isAuthorized: .constant(locationPermission.authorizationStatus == .authorizedWhenInUse || locationPermission.authorizationStatus == .authorizedAlways),
                 isVectorStyle: mapMode != .raster,
                 isThreeD: mapMode == .vector3d,
-                isFollowingUser: $isFollowingUser
+                isFollowingUser: $isFollowingUser,
+                mapDirection: $mapDirection
             )
             .ignoresSafeArea()
             .id(mapMode)
@@ -160,18 +173,15 @@ struct ContentView: View {
 
             VStack {
                 Spacer()
-                HStack {
-                    Text("© OpenFreeMap / OpenMapTiles / OSM contributors")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 4)
-                        .background(.thinMaterial)
-                        .clipShape(RoundedRectangle(cornerRadius: 6))
-                    Spacer()
-                }
-                .padding(.leading, 12)
-                .padding(.bottom, 72)
+                Text("OpenFreeMap (© OpenMapTiles, © OpenStreetMap contributors) — MapLibre")
+                    .font(.system(size: 9))
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(.thinMaterial)
+                    .clipShape(RoundedRectangle(cornerRadius: 6))
+                    .frame(maxWidth: .infinity, alignment: .center)
+                    .padding(.bottom, -18)
             }
         }
         .onChange(of: locationPermission.lastLocation) { newValue in
@@ -182,7 +192,21 @@ struct ContentView: View {
             }
             if isFollowingUser, let loc = newValue {
                 mapCenter = loc.coordinate
+                // Крутим карту по направлению движения, если course валиден
+                if loc.course >= 0 {
+                    mapDirection = loc.course
+                }
             }
+        }
+        .onChange(of: locationPermission.lastHeading) { newHeading in
+            guard isFollowingUser, let h = newHeading else { return }
+            // Предпочитаем course из последней локации (направление движения), иначе trueHeading, иначе magneticHeading
+            let course = locationPermission.lastLocation?.course ?? -1
+            let headingDeg: CLLocationDirection
+            if course > 0 { headingDeg = course }
+            else if h.trueHeading >= 0 { headingDeg = h.trueHeading }
+            else { headingDeg = h.magneticHeading }
+            mapDirection = headingDeg
         }
     }
 }
@@ -195,6 +219,7 @@ struct MapLibreMapView: UIViewRepresentable {
     var isVectorStyle: Bool
     var isThreeD: Bool
     @Binding var isFollowingUser: Bool
+    @Binding var mapDirection: CLLocationDirection
 
     func makeUIView(context: Context) -> MLNMapView {
         let view: MLNMapView
@@ -228,17 +253,27 @@ struct MapLibreMapView: UIViewRepresentable {
                     tap.isEnabled = false
                 }
             }
+            // скрыть встроенный логотип и кнопку MapLibre
+            view.logoView.isHidden = true
+            view.attributionButton.isHidden = true
         }
         return view
     }
 
     func updateUIView(_ uiView: MLNMapView, context: Context) {
-        // Обновляем наклон камеры в зависимости от режима
+        // Обновляем наклон и курс карты в зависимости от режима
         let cam = uiView.camera
         let targetPitch: CGFloat = (isVectorStyle && isThreeD) ? 45 : 0
         if cam.pitch != targetPitch {
             cam.pitch = targetPitch
             uiView.setCamera(cam, animated: true)
+        }
+        // В режиме слежения поворачиваем карту так, чтобы движение было к верху экрана
+        if isFollowingUser {
+            let normalized = fmod(max(0, mapDirection), 360)
+            if fabs(uiView.direction - normalized) > 1e-2 {
+                uiView.setDirection(normalized, animated: true)
+            }
         }
         // Если идёт пользовательский жест, не навязываем никаких изменений
         if !isFollowingUser, context.coordinator.isUserGestureActive {
