@@ -48,6 +48,14 @@ struct ContentView: View {
     @State private var mapCenter: CLLocationCoordinate2D = CLLocationCoordinate2D(latitude: 0, longitude: 0)
     @State private var showDeniedAlert: Bool = false
     @State private var shouldCenterOnNextLocation: Bool = false
+    @State private var showVectorErrorAlert: Bool = false
+
+    enum MapMode: String, Hashable {
+        case raster
+        case vector
+    }
+
+    @State private var mapMode: MapMode = .raster
 
     var body: some View {
         ZStack(alignment: .bottom) {
@@ -55,9 +63,11 @@ struct ContentView: View {
                 centerCoordinate: $mapCenter,
                 zoomLevel: $mapZoom,
                 userLocation: $locationPermission.lastLocation,
-                isAuthorized: .constant(locationPermission.authorizationStatus == .authorizedWhenInUse || locationPermission.authorizationStatus == .authorizedAlways)
+                isAuthorized: .constant(locationPermission.authorizationStatus == .authorizedWhenInUse || locationPermission.authorizationStatus == .authorizedAlways),
+                isVectorStyle: mapMode == .vector
             )
             .ignoresSafeArea()
+            .id(mapMode)
 
             HStack(spacing: 24) {
                 Button("–") { mapZoom = max(mapZoom - 1, 1) }
@@ -75,6 +85,20 @@ struct ContentView: View {
                     }
                 }
                 Button("+") { mapZoom = min(mapZoom + 1, 20) }
+                Button("Перекл.") {
+                    if mapMode == .raster {
+                        // Проверяем наличие URL стиля Liberty в Info.plist
+                        if let urlString = Bundle.main.object(forInfoDictionaryKey: "LibertyStyleURL") as? String,
+                           let url = URL(string: urlString), !urlString.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                            mapMode = .vector
+                        } else {
+                            showVectorErrorAlert = true
+                            mapMode = .raster
+                        }
+                    } else {
+                        mapMode = .raster
+                    }
+                }
             }
             .padding(.horizontal, 24)
             .padding(.vertical, 12)
@@ -85,6 +109,27 @@ struct ContentView: View {
                 Button("OK", role: .cancel) {}
             } message: {
                 Text("Разрешите доступ в Настройках, чтобы центрировать карту по вам.")
+            }
+            .alert("Невозможно загрузить векторный стиль", isPresented: $showVectorErrorAlert) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text("Проверьте LibertyStyleURL в Info.plist и соединение с интернетом.")
+            }
+
+            VStack {
+                Spacer()
+                HStack {
+                    Text("© OpenFreeMap / OpenMapTiles / OSM contributors")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(.thinMaterial)
+                        .clipShape(RoundedRectangle(cornerRadius: 6))
+                    Spacer()
+                }
+                .padding(.leading, 12)
+                .padding(.bottom, 72)
             }
         }
         .onChange(of: locationPermission.lastLocation) { newValue in
@@ -101,12 +146,16 @@ struct MapLibreMapView: UIViewRepresentable {
     @Binding var zoomLevel: Double
     @Binding var userLocation: CLLocation?
     @Binding var isAuthorized: Bool
+    var isVectorStyle: Bool
 
     func makeUIView(context: Context) -> MLNMapView {
-        let styleURL = Bundle.main.url(forResource: "osm_style", withExtension: "json")
         let view: MLNMapView
-        if let url = styleURL {
-            view = MLNMapView(frame: .zero, styleURL: url)
+        if isVectorStyle,
+           let styleURLString = Bundle.main.object(forInfoDictionaryKey: "LibertyStyleURL") as? String,
+           let styleURL = URL(string: styleURLString), !styleURLString.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            view = MLNMapView(frame: .zero, styleURL: styleURL)
+        } else if let rasterURL = Bundle.main.url(forResource: "osm_style", withExtension: "json") {
+            view = MLNMapView(frame: .zero, styleURL: rasterURL)
         } else {
             view = MLNMapView(frame: .zero)
         }

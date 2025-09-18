@@ -37,6 +37,8 @@
     </array>
     <key>NSLocationWhenInUseUsageDescription</key>
     <string>Для показа вашего текущего местоположения на карте</string>
+    <key>LibertyStyleURL</key>
+    <string>https://tiles.openfreemap.org/styles/liberty</string>
 </dict>
 </plist>
 
