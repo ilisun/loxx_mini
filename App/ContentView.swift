@@ -221,6 +221,9 @@ struct MapLibreMapView: UIViewRepresentable {
             // Проверяем наличие нужного векторного источника из Liberty
             guard let vectorSource = style.source(withIdentifier: "openmaptiles") as? MLNVectorTileSource else { return }
 
+            // Локализация подписей: предпочитаем name:ru, иначе name
+            localizeLabelsToRussian(style: style)
+
             // Если в стиле уже есть слой building-3d, полагаемся на него
             if !parent.isThreeD {
                 // В плоском режиме ещё и гарантируем нулевой pitch
@@ -250,8 +253,8 @@ struct MapLibreMapView: UIViewRepresentable {
             // hsl(35,8%,85%) ≈ тёплый светло‑серый
             extrude.fillExtrusionColor = NSExpression(forConstantValue: UIColor(hue: 35.0/360.0, saturation: 0.08, brightness: 0.85, alpha: 1.0))
             // Используем вычисленные атрибуты стиля Liberty
-            extrude.fillExtrusionHeight = NSExpression(format: "mgl_get('render_height')")
-            extrude.fillExtrusionBase = NSExpression(format: "mgl_get('render_min_height')")
+            extrude.fillExtrusionHeight = NSExpression(mglJSONObject: ["get", "render_height"])
+            extrude.fillExtrusionBase = NSExpression(mglJSONObject: ["get", "render_min_height"])
 
             // Вставляем слой над другими строительными полигонами (если есть), иначе в конец
             if let labelLayer = style.layers.reversed().first(where: { $0 is MLNSymbolStyleLayer }) {
@@ -265,6 +268,15 @@ struct MapLibreMapView: UIViewRepresentable {
             if camera.pitch != 45 {
                 camera.pitch = 45
                 mapView.setCamera(camera, animated: true)
+            }
+        }
+
+        private func localizeLabelsToRussian(style: MLNStyle) {
+            for layer in style.layers {
+                guard let symbolLayer = layer as? MLNSymbolStyleLayer else { continue }
+                if symbolLayer.text != nil {
+                    symbolLayer.text = NSExpression(mglJSONObject: ["coalesce", ["get", "name:ru"], ["get", "name"]])
+                }
             }
         }
     }
